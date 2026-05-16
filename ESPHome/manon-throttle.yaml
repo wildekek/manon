@@ -1,0 +1,300 @@
+# MKS Express
+# Pinout:
+#   5v
+#   CanH  = GPIO0
+#   CanL  = GPIO1
+#   GND
+
+#   GND
+#   5V
+#   RX  = GPIO20
+#   TX  = GPIO21
+#   IO9 = GPIO9 (Strapping: pull low = boot problem)
+#   EN  = Chip Enable (not a GPIO)
+
+# Red LED   = GPIO2
+# Blue LED  = GPIO3
+
+substitutions:
+  device_name: "manon-throttle"
+  device_friendly_name: "Manon Throttle"
+  device_description: "MKS Express"
+  time_timezone: "Europe/Amsterdam"
+
+# ────────────────────────────────────────────────────────────────
+# Globals for ramp filter
+# ────────────────────────────────────────────────────────────────
+globals:
+  - id: throttle_out
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+  - id: step_up        # Δ per loop when accelerating (dt/ramp_up)
+    type: float
+    restore_value: no
+    initial_value: '0.0166'   # 0.005/0.30 default
+  - id: step_down      # Δ per loop when decelerating (dt/ramp_down)
+    type: float
+    restore_value: no
+    initial_value: '0.0333'   # 0.005/0.15 default
+
+esphome:
+  name: $device_name
+  friendly_name: $device_friendly_name
+  comment: $device_description
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+status_led:
+  pin:
+    number: GPIO2
+    ignore_strapping_warning: true
+
+logger:
+  baud_rate: 0
+  level: INFO
+
+api:
+  encryption:
+    key: !secret home_assistant_key
+  reboot_timeout: 0s
+
+ota:
+  - platform: web_server
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  use_address: $device_name.local
+  networks:
+  # Try to connect to the WiFi of the VESC
+  - ssid: !secret wifi_manon_ssid
+    priority: 1
+    password: !secret wifi_manon_password
+    manual_ip:
+      static_ip: 192.168.4.104
+      gateway: 192.168.4.1
+      subnet: 255.255.255.0
+  # Try to connect to the Home WiFi
+  - ssid: !secret wifi_ssid
+    priority: 2
+    password: !secret wifi_password
+
+  # When WiFi fails, create our own AP
+  ap:
+    ap_timeout: 10s
+    ssid: $device_friendly_name
+    password: !secret wifi_fallback_password
+
+web_server:
+  port: 80
+  local: True
+  version: 3
+
+output:
+  - platform: gpio
+    pin: GPIO3
+    id: gpio_3
+
+canbus:
+  - platform: esp32_can
+    rx_pin: GPIO0
+    tx_pin: GPIO1
+    can_id: 4
+    bit_rate: 500kbps
+    use_extended_id: True
+    id: can0
+
+i2c:
+  sda: GPIO21 # TX pin
+  scl: GPIO20 # RX pin
+  scan: false
+  id: bus_a
+
+as5600:
+  address: 0x36
+  # updated limits for new install
+  start_position: 1270
+  end_position: 3111
+
+switch:
+  - platform: template
+    name: "Enable CANBUS"
+    id: canbus_enable
+    optimistic: True
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      then:
+        # Instant stop (bypass ramp/expo)
+        - lambda: id(vesc_set_throttle)->execute(0, id(vesc_can_id).state, id(control_mode).state, true);
+
+select:
+  - platform: template
+    name: Mode
+    id: control_mode
+    optimistic: true
+    restore_value: true
+    options:
+      - duty cycle
+      - current
+    initial_option: duty cycle
+
+number:
+  - platform: template
+    id: vesc_can_id
+    name: "VESC CAN-ID"
+    min_value: 0
+    max_value: 255
+    step: 1
+    restore_value: true
+    optimistic: true
+    mode: box
+
+  - platform: template
+    id: ramp_up
+    name: "Ramp Up (0→100%)"
+    unit_of_measurement: "s"
+    min_value: 0.05
+    max_value: 5.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.30
+    on_value:
+      then:
+        - lambda: |-
+            float t = x < 0.05f ? 0.05f : x;
+            id(step_up) = 0.005f / t;  // dt = 5 ms
+
+  - platform: template
+    id: ramp_down
+    name: "Ramp Down (100→0%)"
+    unit_of_measurement: "s"
+    min_value: 0.05
+    max_value: 5.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: box
+    initial_value: 0.15
+    on_value:
+      then:
+        - lambda: |-
+            float t = x < 0.05f ? 0.05f : x;
+            id(step_down) = 0.005f / t;
+
+  - platform: template
+    id: expo
+    name: "Exponential"
+    unit_of_measurement: "ratio"
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.05
+    restore_value: true
+    optimistic: true
+    mode: slider
+    initial_value: 0.20
+
+sensor:
+  - platform: internal_temperature
+    name: "Temperature"
+
+  - platform: as5600
+    update_interval: 5ms          # 200 Hz loop
+    name: Throttle
+    id: throttle
+    accuracy_decimals: 3
+    icon: mdi:rotate-right
+    filters:
+      - lambda: 'return (((x / as5600::POSITION_COUNT) * 2) - 1) * -1;'
+      - lambda: |-
+          if (x > -0.060 && x < 0.060) {
+            return 0;
+          }
+          return x;
+    on_value_range:
+      - above: -0.001
+        below: 0.001
+        then:
+          - switch.turn_on: canbus_enable
+    on_value:
+      then:
+        - if:
+            condition:
+              switch.is_on: canbus_enable
+            then:
+              - lambda: id(vesc_set_throttle)->execute(x, id(vesc_can_id).state, id(control_mode).state, false);
+
+    raw_position:
+      name: Magnet Position
+      disabled_by_default: True
+    gain:
+      name: Magnet Gain
+      disabled_by_default: True
+    magnitude:
+      name: Magnet Magnitude
+      disabled_by_default: True
+    status:
+      name: Magnet Status code
+      id: status_code
+      disabled_by_default: True
+
+text_sensor:
+  - platform: template
+    name: "Magnet Status"
+    entity_category: DIAGNOSTIC
+    lambda: |-
+      switch ((int)id(status_code).state) {
+        case 2: return {"No magnet detected"};
+        case 4: return {"Good"};
+        case 5: return {"Too strong"};
+        case 6: return {"Too weak"};
+        default: return {"Unknown"};
+      }
+
+script:
+  - id: vesc_set_throttle
+    parameters:
+      throttle: float
+      vesc_can_id: int
+      mode: string
+      instant: bool
+    then:
+      - lambda: |-
+          float out;
+          if (instant) {
+            out = throttle;
+            id(throttle_out) = out;
+          } else {
+            // ───── Expo (sign‑safe) ─────
+            float expo_val = id(expo).state;
+            float target = (1.0f - expo_val) * throttle + expo_val * throttle * throttle * throttle;
+
+            // ───── Symmetric ramp (works fwd & rev) ─────
+            out = id(throttle_out);
+            float diff = target - out;
+            bool accelerating = fabsf(target) > fabsf(out);   // magnitude increasing in either direction
+            float step_mag = accelerating ? id(step_up) : id(step_down);
+            if (fabsf(diff) <= step_mag) {
+              out = target;   // close enough, snap to target
+            } else {
+              out += (diff > 0 ? step_mag : -step_mag);
+            }
+            id(throttle_out) = out;
+          }
+
+          // ───── Send to VESC over CAN ─────
+          uint32_t command_id = (mode == "current") ? 10 : 0; // CURRENT_REL or DUTY
+          uint32_t canid = (command_id << 8) | vesc_can_id;
+          int32_t scaled = (int32_t)(out * 100000.0f);
+          std::vector<uint8_t> payload{
+              (uint8_t)((scaled >> 24) & 0xFF),
+              (uint8_t)((scaled >> 16) & 0xFF),
+              (uint8_t)((scaled >> 8)  & 0xFF),
+              (uint8_t)( scaled        & 0xFF)
+          };
+          id(can0)->send_data(canid, true, false, payload);
