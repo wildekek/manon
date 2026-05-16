@@ -1,0 +1,91 @@
+#https://vi.aliexpress.com/item/1005006194839720.html?spm=a2g0o.order_list.order_list_main.5.38af18022iC7wk&gatewayAdapt=glo2vnm
+#https://www.espressif.com/sites/default/files/documentation/esp32-c3-mini-1_datasheet_en.pdf
+#https://private-user-images.githubusercontent.com/8555086/266798199-8ef461d9-3bb0-4789-9a6e-0c9949c587a6.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDc5Mjk2MDMsIm5iZiI6MTc0NzkyOTMwMywicGF0aCI6Ii84NTU1MDg2LzI2Njc5ODE5OS04ZWY0NjFkOS0zYmIwLTQ3ODktOWE2ZS0wYzk5NDljNTg3YTYucG5nP1gtQW16LUFsZ29yaXRobT1BV1M0LUhNQUMtU0hBMjU2JlgtQW16LUNyZWRlbnRpYWw9QUtJQVZDT0RZTFNBNTNQUUs0WkElMkYyMDI1MDUyMiUyRnVzLWVhc3QtMSUyRnMzJTJGYXdzNF9yZXF1ZXN0JlgtQW16LURhdGU9MjAyNTA1MjJUMTU1NTAzWiZYLUFtei1FeHBpcmVzPTMwMCZYLUFtei1TaWduYXR1cmU9YTA2MTU5MTYzYTBiMGI0NDgwYWEwNmZlNDA5ZDEwMDU4OGQ2NjMzYTcxODI2ZWMxNTE1YmMxMTFhNDIwZDIyOSZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QifQ.sT-lDs_-NihvH9Xce6l-FugMPebioeNLdaaMONoWkSE
+substitutions:
+  device_name: "manon-display"
+  device_friendly_name: "Manon Display"
+  device_description: "ESP32-2424S012"
+  time_timezone: "Europe/Amsterdam"
+
+esphome:
+  name: $device_name
+  friendly_name: $device_friendly_name
+  comment: $device_description
+  #on_boot:
+    #- delay: 5s
+    #- lvgl.widget.hide: boot_screen
+  #platformio_options:
+  #  build_flags: ["-DLV_USE_PERF_MONITOR"]  
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret home_assistant_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: $device_friendly_name
+    password: !secret wifi_fallback_password
+captive_portal:
+
+
+#-------------------------------------------
+# Display GC9A01A
+#-------------------------------------------  
+output:
+  - platform: ledc
+    pin:
+      number: GPIO03
+    id: backlight_output
+
+light:
+  - platform: monochromatic
+    output: backlight_output
+    name: Backlight
+    id: backlight
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+#-------------------------------------------
+# CANBUS
+#-------------------------------------------  
+# rx_pin: GPIO21
+# tx_pin: GPIO20
+
+#-------------------------------------------
+# Button
+#-------------------------------------------  
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO9
+      inverted: true
+      ignore_strapping_warning: True
+    name: "Boot button"
+  - platform: gpio
+    pin:
+      number: GPIO20
+      inverted: true
+    name: "GPIO20"
+  - platform: gpio
+    pin:
+      number: GPIO21
+      inverted: true
+    name: "GPIO21"
